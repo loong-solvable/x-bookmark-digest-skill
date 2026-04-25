@@ -1,0 +1,54 @@
+import type * as http2 from "node:http2";
+import * as http from "node:http";
+import * as https from "node:https";
+import type { UniversalClientFn } from "@connectrpc/connect/protocol";
+/**
+ * Options for creating an UniversalClientFn using the Node.js `http`, `https`,
+ * or `http2` module.
+ */
+export type NodeHttpClientOptions = {
+    /**
+     * Use the Node.js `http` or `https` module.
+     */
+    httpVersion: "1.1";
+    /**
+     * Options passed to the request() call of the Node.js built-in
+     * http or https module.
+     */
+    nodeOptions?: Omit<http.RequestOptions, "signal"> | Omit<https.RequestOptions, "signal">;
+} | {
+    /**
+     * Use the Node.js `http2` module.
+     */
+    httpVersion: "2";
+    /**
+     * A function that must return a session manager for the given URL.
+     * The session manager may be taken from a pool.
+     * By default, a new Http2SessionManager is created for every request.
+     */
+    sessionProvider?: (url: string) => NodeHttp2ClientSessionManager;
+};
+/**
+ * Create a universal client function, a minimal abstraction of an HTTP client,
+ * using the Node.js `http`, `https`, or `http2` module.
+ *
+ * @private Internal code, does not follow semantic versioning.
+ */
+export declare function createNodeHttpClient(options: NodeHttpClientOptions): UniversalClientFn;
+/**
+ * Manager for a HTTP/2 session.
+ */
+export interface NodeHttp2ClientSessionManager {
+    /**
+     * The host this session manager connects to.
+     */
+    authority: string;
+    /**
+     * Issue a request.
+     */
+    request(method: string, path: string, headers: http2.OutgoingHttpHeaders, options: Omit<http2.ClientSessionRequestOptions, "signal">): Promise<http2.ClientHttp2Stream>;
+    /**
+     * Notify the manager of a successful read from a http2.ClientHttp2Stream.
+     */
+    notifyResponseByteRead(stream: http2.ClientHttp2Stream): void;
+}

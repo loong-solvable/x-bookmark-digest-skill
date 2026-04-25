@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Bookmark Digest"
+  short_description: "Export, classify, and summarize X or Twitter bookmarks"
+  default_prompt: "Use $x-bookmark-digest to export a logged-in user's X bookmarks from their real browser session into local artifacts, then produce a categorized digest, reading queue, and bookmark index."
