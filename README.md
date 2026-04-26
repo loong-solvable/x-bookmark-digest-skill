@@ -66,6 +66,10 @@ runs/<timestamp>/report/bookmark-digest.md
 runs/<timestamp>/report/bookmark-index.md
 ```
 
+If you want another user to install this skill by pasting a single prompt into Codex or Claude Code, use:
+
+- [INSTALL_PROMPT.md](./INSTALL_PROMPT.md)
+
 ## Quick Start
 
 From the repo root:
