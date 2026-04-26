@@ -1,28 +1,33 @@
 # Runtime Notes
 
-## Real Browser Only
+## Scope Boundary
 
-This skill is intentionally locked to the user's real Chromium browser session.
+This skill is a bookmark raw-data collector, not an X action bot.
 
-Do not switch to:
+Do not mix it into:
 
-- Playwright
-- OpenClaw managed browser
-- copied browser profiles
-- temporary isolated Chrome windows
+- `opencli twitter timeline`
+- `opencli twitter like`
+- `opencli twitter reply`
+- `bird`
+- Playwright browser automation
 
-If the real-browser bridge is unavailable, stop and tell the user what is missing.
+Those are separate automation workflows. This skill only extracts bookmarks and prepares local artifacts for later summarization.
 
 ## What The Exporter Actually Does
 
-1. Uses the bundled `vendor/bb-browser/dist/daemon.js`
-2. Talks to the browser extension loaded from `vendor/bb-browser/extension`
-3. Lists tabs in the user's real browser
-4. Reuses an existing `https://x.com/i/bookmarks` tab when possible
-5. Otherwise opens one new bookmarks tab in that same browser
-6. Scrolls, extracts visible posts, normalizes them, and writes local artifacts
+1. Resolves `auth_token` and `ct0` from one of these sources:
+   - `--auth-token` and `--ct0`
+   - `X_AUTH_TOKEN` and `X_CT0`
+   - `--cookie-header` or `X_COOKIE_HEADER`
+   - the user's real macOS Chromium profile
+2. Resolves the current Bookmarks GraphQL `queryId`
+3. Calls X's bookmarks API directly
+4. Normalizes the response into bookmark rows
+5. Writes local artifacts under `runs/<timestamp>/`
 
 No profile copy is created.
+No automation browser or extension is required.
 
 ## Readiness Check
 
@@ -34,50 +39,53 @@ node scripts/export_x_bookmarks.mjs --check
 
 Healthy output should show:
 
-- `daemon_running: true`
-- `extension_connected: true`
+- `mode: "embedded-mini-opencli"`
+- `ready: true`
+- a usable `auth_source`
 
-If `extension_connected` is `false`, load the unpacked extension from:
-
-```text
-vendor/bb-browser/extension
-```
-
-into the user's usual browser.
+If `ready` is `false`, the check output should also show which browser / profile was probed.
 
 ## Common Failures
 
-### Port 19824 is busy
+### Automatic cookie discovery finds the wrong profile
 
-The bundled daemon uses `http://localhost:19824` by default.
+Pass:
 
-Either free the port or intentionally move both:
+```bash
+--browser chrome --profile Default
+```
 
-- the daemon endpoint passed to `--daemon-url`
-- the extension upstream URL in its options page
+or another explicit browser/profile pair.
 
-### Extension never connects
+### macOS prompts for Keychain access
 
-Likely causes:
+This is expected when the exporter decrypts Chromium cookies for the first time.
 
-- the unpacked extension was not loaded
-- the user opened the wrong browser
-- the browser is closed
-- the extension options page points at the wrong daemon URL
+The exporter only needs the browser's Safe Storage entry so it can decrypt `auth_token` and `ct0`.
 
-### X redirects to login
+If the user does not want that prompt, use manual cookies instead:
 
-The real browser is not logged into the intended X account.
+```bash
+--auth-token <value> --ct0 <value>
+```
 
-Fix it in the same browser first, then rerun the exporter.
+### GraphQL returns 401 or 403
 
-### Page loads but tweet count stays zero
+Usually the browser login state is stale.
 
-Possible causes:
+Fix it in that same browser, then rerun the exporter.
 
-- X rendered an empty bookmarks state
-- X changed markup
-- a login / consent interstitial blocked the timeline
+### TLS certificate verification fails
+
+If this machine has a local certificate-chain issue, rerun with:
+
+```bash
+--insecure
+```
+
+Only use that when you know the failure is local TLS validation rather than a network attack.
+
+### GraphQL shape changes or query id expires
 
 Check:
 
