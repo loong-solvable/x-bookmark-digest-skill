@@ -28,6 +28,7 @@ Those are separate automation workflows. This skill only extracts bookmarks and 
 
 No profile copy is created.
 No automation browser or extension is required.
+The SQLite reader is bundled inside the skill via vendored `sql.js`, so macOS users do not need an external `sqlite3` CLI.
 
 ## Readiness Check
 

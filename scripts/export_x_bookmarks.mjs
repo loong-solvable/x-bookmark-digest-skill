@@ -382,8 +382,8 @@ function writeSeedMarkdown(filePath, stats, chunkManifest) {
   fs.writeFileSync(filePath, lines.join("\n"), "utf8");
 }
 
-function buildCheckResponse(args) {
-  const readiness = inspectAuthReadiness(args);
+async function buildCheckResponse(args) {
+  const readiness = await inspectAuthReadiness(args);
   return {
     ok: true,
     check_only: true,
@@ -400,13 +400,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.check) {
-    console.log(JSON.stringify(buildCheckResponse(args), null, 2));
+    console.log(JSON.stringify(await buildCheckResponse(args), null, 2));
     return;
   }
 
   maybeEnableInsecureTls(args);
 
-  const auth = resolveAuthContext(args);
+  const auth = await resolveAuthContext(args);
   const queryId = await resolveBookmarksQueryId(args.queryId);
   const runDir = makeRunDir(args.outDir);
   const collected = await collectBookmarksViaApi({

@@ -3,6 +3,8 @@ import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
 import { createDecipheriv, createHash, pbkdf2Sync } from "crypto";
+import { createRequire } from "module";
+import { fileURLToPath } from "url";
 
 const MACOS_BROWSER_SPECS = [
   {
@@ -44,6 +46,14 @@ const MACOS_BROWSER_SPECS = [
 
 const X_COOKIE_HOSTS = [".x.com", "x.com", ".twitter.com", "twitter.com"];
 const X_COOKIE_NAMES = ["auth_token", "ct0"];
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SQLJS_DIST_DIR = path.resolve(MODULE_DIR, "..", "..", "vendor", "sql.js", "dist");
+const SQLJS_ENTRY = path.join(SQLJS_DIST_DIR, "sql-wasm.js");
+const require = createRequire(import.meta.url);
+const initSqlJsModule = require(SQLJS_ENTRY);
+const initSqlJs = initSqlJsModule?.default || initSqlJsModule;
+
+let sqlJsPromise = null;
 
 function parseCookieHeader(rawHeader) {
   const jar = {};
@@ -150,33 +160,48 @@ function listProfileNames(userDataDir, preferredProfile) {
   });
 }
 
-function withCopiedDatabase(cookieDbPath, callback) {
+async function withCopiedDatabase(cookieDbPath, callback) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "x-bookmark-cookies-"));
   const tempDbPath = path.join(tempDir, "Cookies.sqlite");
   fs.copyFileSync(cookieDbPath, tempDbPath);
   try {
-    return callback(tempDbPath);
+    return await callback(tempDbPath);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-function runSqliteQuery(cookieDbPath, sql) {
-  return withCopiedDatabase(cookieDbPath, (tempDbPath) => {
-    const stdout = execFileSync("sqlite3", ["-tabs", tempDbPath, sql], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
+async function loadSqlJs() {
+  if (!sqlJsPromise) {
+    sqlJsPromise = initSqlJs({
+      locateFile: (file) => path.join(SQLJS_DIST_DIR, file),
     });
-    if (!stdout.trim()) return [];
-    return stdout
-      .trim()
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => line.split("\t"));
+  }
+  return await sqlJsPromise;
+}
+
+async function runSqliteQuery(cookieDbPath, sql) {
+  return await withCopiedDatabase(cookieDbPath, async (tempDbPath) => {
+    const SQL = await loadSqlJs();
+    const bytes = fs.readFileSync(tempDbPath);
+    const db = new SQL.Database(bytes);
+    try {
+      const [result] = db.exec(sql);
+      if (!result) return [];
+      return result.values.map((row) =>
+        row.map((cell) => {
+          if (cell == null) return "";
+          if (typeof cell === "bigint") return cell.toString();
+          return String(cell);
+        }),
+      );
+    } finally {
+      db.close();
+    }
   });
 }
 
-function queryXCookieRows(cookieDbPath) {
+async function queryXCookieRows(cookieDbPath) {
   const hostList = X_COOKIE_HOSTS.map((host) => `'${host}'`).join(", ");
   const nameList = X_COOKIE_NAMES.map((name) => `'${name}'`).join(", ");
   const sql = [
@@ -195,7 +220,8 @@ function queryXCookieRows(cookieDbPath) {
     "  CASE host_key WHEN '.x.com' THEN 0 WHEN 'x.com' THEN 1 WHEN '.twitter.com' THEN 2 ELSE 3 END",
   ].join(" ");
 
-  return runSqliteQuery(cookieDbPath, sql).map(([hostKey, name, value, encryptedHex, cookiePath, expiresUtc]) => ({
+  const rows = await runSqliteQuery(cookieDbPath, sql);
+  return rows.map(([hostKey, name, value, encryptedHex, cookiePath, expiresUtc]) => ({
     hostKey,
     name,
     value,
@@ -205,14 +231,14 @@ function queryXCookieRows(cookieDbPath) {
   }));
 }
 
-function queryCookieDbVersion(cookieDbPath) {
-  const rows = runSqliteQuery(cookieDbPath, "SELECT value FROM meta WHERE key = 'version' LIMIT 1");
+async function queryCookieDbVersion(cookieDbPath) {
+  const rows = await runSqliteQuery(cookieDbPath, "SELECT value FROM meta WHERE key = 'version' LIMIT 1");
   const value = rows[0]?.[0];
   const version = Number.parseInt(value || "", 10);
   return Number.isFinite(version) ? version : 0;
 }
 
-function inspectCookieDb(cookieDbPath) {
+async function inspectCookieDb(cookieDbPath) {
   if (!cookieDbPath || !fs.existsSync(cookieDbPath)) {
     return {
       cookieDbPath,
@@ -224,7 +250,7 @@ function inspectCookieDb(cookieDbPath) {
   }
 
   try {
-    const rows = queryXCookieRows(cookieDbPath);
+    const rows = await queryXCookieRows(cookieDbPath);
     return {
       cookieDbPath,
       cookieDbExists: true,
@@ -243,7 +269,7 @@ function inspectCookieDb(cookieDbPath) {
   }
 }
 
-function inspectBrowserCandidates(options) {
+async function inspectBrowserCandidates(options) {
   const browserChoice = normalizeBrowserChoice(options.browser);
   const profileChoice = normalizeProfileChoice(options.profile);
   const candidates = [];
@@ -265,7 +291,7 @@ function inspectBrowserCandidates(options) {
         const cookieDbPath = path.join(browser.userDataDir, profileName, "Cookies");
         probe.profiles.push({
           profile: profileName,
-          ...inspectCookieDb(cookieDbPath),
+          ...(await inspectCookieDb(cookieDbPath)),
         });
       }
     }
@@ -276,10 +302,10 @@ function inspectBrowserCandidates(options) {
   return candidates;
 }
 
-function selectBrowserProfile(options) {
+async function selectBrowserProfile(options) {
   const browserChoice = normalizeBrowserChoice(options.browser);
   const profileChoice = normalizeProfileChoice(options.profile);
-  const candidates = inspectBrowserCandidates({ browser: browserChoice, profile: profileChoice });
+  const candidates = await inspectBrowserCandidates({ browser: browserChoice, profile: profileChoice });
 
   let firstCookieDb = null;
   for (const browser of candidates) {
@@ -405,7 +431,7 @@ function resolveCookieValue(row, passphrase, cookieDbVersion) {
   return withoutIntegrityPrefix.toString("utf8").trim();
 }
 
-export function inspectAuthReadiness(options) {
+export async function inspectAuthReadiness(options) {
   const manual = getManualAuthContext(options);
   if (manual) {
     return {
@@ -438,6 +464,7 @@ export function inspectAuthReadiness(options) {
   const explicitCookieDb = options.cookieDb ? path.resolve(options.cookieDb) : null;
   if (explicitCookieDb) {
     const browser = inferBrowserSpecFromCookieDb(explicitCookieDb);
+    const cookieDbInfo = await inspectCookieDb(explicitCookieDb);
     response.browser_probe = {
       selected: {
         browser: browser?.id || normalizeBrowserChoice(options.browser),
@@ -447,7 +474,7 @@ export function inspectAuthReadiness(options) {
         keychain_service: browser?.keychainService || null,
       },
       candidates: [],
-      ...inspectCookieDb(explicitCookieDb),
+      ...cookieDbInfo,
     };
     response.ready = response.browser_probe.xCookieNames.includes("auth_token") && response.browser_probe.xCookieNames.includes("ct0");
     response.auth_source = response.ready ? "macos-chromium" : null;
@@ -455,7 +482,7 @@ export function inspectAuthReadiness(options) {
     return response;
   }
 
-  const probe = selectBrowserProfile(options);
+  const probe = await selectBrowserProfile(options);
   response.browser_probe = {
     selected: probe.selected
       ? {
@@ -481,7 +508,7 @@ export function inspectAuthReadiness(options) {
   return response;
 }
 
-export function resolveAuthContext(options) {
+export async function resolveAuthContext(options) {
   const manual = getManualAuthContext(options);
   if (manual) {
     return manual;
@@ -508,7 +535,7 @@ export function resolveAuthContext(options) {
       keychainAccount: browser.keychainAccount,
     };
   } else {
-    const probe = selectBrowserProfile(options);
+    const probe = await selectBrowserProfile(options);
     selected = probe.selected;
   }
 
@@ -516,8 +543,8 @@ export function resolveAuthContext(options) {
     throw new Error("Could not locate a logged-in Chromium profile with X cookies. Use --browser/--profile to point at the right profile, or pass --auth-token and --ct0 directly.");
   }
 
-  const rows = queryXCookieRows(selected.cookieDbPath);
-  const cookieDbVersion = queryCookieDbVersion(selected.cookieDbPath);
+  const rows = await queryXCookieRows(selected.cookieDbPath);
+  const cookieDbVersion = await queryCookieDbVersion(selected.cookieDbPath);
   const authRow = pickBestCookieRow(rows, "auth_token");
   const ct0Row = pickBestCookieRow(rows, "ct0");
   if (!authRow || !ct0Row) {

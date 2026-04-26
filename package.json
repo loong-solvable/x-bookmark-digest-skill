@@ -1,0 +1,13 @@
+{
+  "name": "x-bookmark-digest-skill",
+  "private": true,
+  "type": "module",
+  "description": "Self-contained macOS X bookmark export and digest skill",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node scripts/export_x_bookmarks.mjs --check",
+    "export": "node scripts/export_x_bookmarks.mjs"
+  }
+}
