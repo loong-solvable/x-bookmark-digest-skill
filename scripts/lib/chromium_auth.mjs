@@ -2,7 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
-import { createDecipheriv, pbkdf2Sync } from "crypto";
+import { createDecipheriv, createHash, pbkdf2Sync } from "crypto";
 
 const MACOS_BROWSER_SPECS = [
   {
@@ -205,6 +205,13 @@ function queryXCookieRows(cookieDbPath) {
   }));
 }
 
+function queryCookieDbVersion(cookieDbPath) {
+  const rows = runSqliteQuery(cookieDbPath, "SELECT value FROM meta WHERE key = 'version' LIMIT 1");
+  const value = rows[0]?.[0];
+  const version = Number.parseInt(value || "", 10);
+  return Number.isFinite(version) ? version : 0;
+}
+
 function inspectCookieDb(cookieDbPath) {
   if (!cookieDbPath || !fs.existsSync(cookieDbPath)) {
     return {
@@ -365,7 +372,19 @@ function decryptChromiumCookieValue(encryptedHex, passphrase) {
   const key = pbkdf2Sync(Buffer.from(passphrase, "utf8"), "saltysalt", 1003, 16, "sha1");
   const decipher = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
   const decrypted = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
-  return decrypted.toString("utf8");
+  return decrypted;
+}
+
+function removeCookieDomainIntegrityPrefix(buffer, hostKey, cookieDbVersion) {
+  if (!Buffer.isBuffer(buffer)) return Buffer.from([]);
+  if (cookieDbVersion < 24) return buffer;
+  if (buffer.length < 32) return buffer;
+  const expectedPrefix = createHash("sha256").update(hostKey, "utf8").digest();
+  const actualPrefix = buffer.subarray(0, 32);
+  if (expectedPrefix.equals(actualPrefix)) {
+    return buffer.subarray(32);
+  }
+  return buffer;
 }
 
 function pickBestCookieRow(rows, name) {
@@ -377,11 +396,13 @@ function pickBestCookieRow(rows, name) {
   return matches[0] || null;
 }
 
-function resolveCookieValue(row, passphrase) {
+function resolveCookieValue(row, passphrase, cookieDbVersion) {
   if (!row) return "";
   if (row.value) return row.value;
   if (!row.encryptedHex) return "";
-  return decryptChromiumCookieValue(row.encryptedHex, passphrase).trim();
+  const decrypted = decryptChromiumCookieValue(row.encryptedHex, passphrase);
+  const withoutIntegrityPrefix = removeCookieDomainIntegrityPrefix(decrypted, row.hostKey, cookieDbVersion);
+  return withoutIntegrityPrefix.toString("utf8").trim();
 }
 
 export function inspectAuthReadiness(options) {
@@ -496,6 +517,7 @@ export function resolveAuthContext(options) {
   }
 
   const rows = queryXCookieRows(selected.cookieDbPath);
+  const cookieDbVersion = queryCookieDbVersion(selected.cookieDbPath);
   const authRow = pickBestCookieRow(rows, "auth_token");
   const ct0Row = pickBestCookieRow(rows, "ct0");
   if (!authRow || !ct0Row) {
@@ -503,8 +525,8 @@ export function resolveAuthContext(options) {
   }
 
   const passphrase = readMacSafeStoragePassword(selected.keychainService, selected.keychainAccount);
-  const authToken = resolveCookieValue(authRow, passphrase);
-  const ct0 = resolveCookieValue(ct0Row, passphrase);
+  const authToken = resolveCookieValue(authRow, passphrase, cookieDbVersion);
+  const ct0 = resolveCookieValue(ct0Row, passphrase, cookieDbVersion);
 
   if (!authToken || !ct0) {
     throw new Error(`Failed to decrypt auth_token or ct0 from ${selected.browserLabel}/${selected.profileName}.`);
@@ -518,6 +540,7 @@ export function resolveAuthContext(options) {
     browserLabel: selected.browserLabel,
     profile: selected.profileName,
     cookieDbPath: selected.cookieDbPath,
+    cookieDbVersion,
     keychainService: selected.keychainService,
   };
 }
